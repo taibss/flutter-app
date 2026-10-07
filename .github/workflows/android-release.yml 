@@ -1,0 +1,171 @@
+# Flutter Android: Test, Build & Deploy (GitHub Experiment Guide)
+
+Repo layout expected:
+
+```
+your-flutter-app/
+├── .github/workflows/android-release.yml   <- the workflow (provided)
+├── android/
+├── lib/
+└── pubspec.yaml
+```
+
+---
+
+## 1. Test on Emulator and Physical Device (run locally)
+
+```bash
+flutter doctor                 # verify toolchain
+flutter emulators              # list emulators
+flutter emulators --launch <id>
+flutter run                    # runs on the emulator
+
+# Physical device
+# Phone: Settings > About phone > tap "Build number" 7x > Developer options > enable USB debugging
+adb devices                    # device should be listed as "device"
+flutter devices
+flutter run -d <device-id>
+```
+
+Check: UI responsiveness (different screen sizes), navigation (back button, deep flows), core functionality, rotation, no-network behaviour.
+
+## 2. Debugging and Final Code Review
+
+```bash
+flutter analyze                # static issues (also runs in CI)
+flutter test
+dart fix --apply               # auto-fix lints
+```
+
+- Use `debugPrint('...')` instead of `print()`. It throttles output and is easier to strip.
+- Remove unused code, assets, and dependencies:
+
+```bash
+flutter pub deps               # inspect the tree
+flutter pub remove <package>   # drop anything unused
+```
+
+Also delete unused images from `assets/` and their entries in `pubspec.yaml`.
+
+## 3. Build Release APK / App Bundle (locally)
+
+```bash
+flutter build apk --release        # output: build/app/outputs/flutter-apk/app-release.apk
+flutter build appbundle            # output: build/app/outputs/bundle/release/app-release.aab
+```
+
+## 4. Prepare for Play Store
+
+### 4a. Create the signing key
+
+```bash
+keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+```
+
+Move it to `android/app/upload-keystore.jks`.
+
+### 4b. `android/key.properties` (local only, never commit)
+
+```
+storePassword=<your-store-password>
+keyPassword=<your-key-password>
+keyAlias=upload
+storeFile=upload-keystore.jks
+```
+
+### 4c. `android/app/build.gradle` (Groovy; adapt if you use `build.gradle.kts`)
+
+Add above `android { ... }`:
+
+```groovy
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file('key.properties')
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+```
+
+Inside `android { ... }`:
+
+```groovy
+signingConfigs {
+    release {
+        keyAlias keystoreProperties['keyAlias']
+        keyPassword keystoreProperties['keyPassword']
+        storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null
+        storePassword keystoreProperties['storePassword']
+    }
+}
+buildTypes {
+    release {
+        signingConfig signingConfigs.release
+    }
+}
+```
+
+### 4d. `.gitignore` (critical)
+
+```
+android/key.properties
+*.jks
+*.keystore
+```
+
+### 4e. Test the signed build
+
+```bash
+flutter build apk --release
+adb install build/app/outputs/flutter-apk/app-release.apk
+```
+
+### 4f. Play Store requirements checklist
+
+- App icon: 512x512 PNG
+- Feature graphic: 1024x500
+- Screenshots: at least 2 phone screenshots
+- Short description (80 chars) and full description (4000 chars)
+- Privacy policy URL
+- Unique `applicationId` and bumped `version:` in `pubspec.yaml`
+- Upload the `.aab` in Play Console
+
+---
+
+## 5. Run it on GitHub
+
+1. Create the repo and push:
+
+```bash
+git init
+git add .
+git commit -m "Initial commit"
+git branch -M main
+git remote add origin https://github.com/<username>/<repo>.git
+git push -u origin main
+```
+
+2. Encode the keystore and add repository secrets (Settings > Secrets and variables > Actions > New repository secret):
+
+```bash
+base64 -w 0 android/app/upload-keystore.jks     # Linux
+# macOS: base64 -i android/app/upload-keystore.jks
+```
+
+| Secret | Value |
+|---|---|
+| `KEYSTORE_BASE64` | output of the command above |
+| `KEYSTORE_PASSWORD` | store password |
+| `KEY_PASSWORD` | key password |
+| `KEY_ALIAS` | `upload` |
+
+3. Push to `main`: the workflow runs `flutter analyze` and `flutter test`, then builds the signed APK and AAB and uploads them as artifacts (Actions tab > run > Artifacts).
+
+4. Make a downloadable release:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The APK and AAB are attached to a GitHub Release automatically.
+
+> If `flutter analyze` fails in CI, fix the reported issues first. That is Step 2 doing its job.
